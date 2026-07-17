@@ -179,6 +179,9 @@
         <div id="log-status"></div>
     </div>
 
+    <div id="version-tag" style="position:absolute;right:8px;top:4px;z-index:20;font-size:10px;opacity:0.5;pointer-events:none;">v1.3</div>
+    <div id="debug-panel" style="display:none;position:absolute;left:0;bottom:0;width:100vw;z-index:300;background:rgba(0,0,0,0.75);color:#8f8;font-family:monospace;font-size:10px;line-height:1.5;padding:6px 8px;box-sizing:border-box;pointer-events:none;white-space:pre-wrap;"></div>
+
     <script>
     'use strict';
 
@@ -565,6 +568,7 @@
      *                        masterGain → destination
      * ================================================================ */
     function initAudio() {
+        if (audioCtx) return;
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
         const highpass = audioCtx.createBiquadFilter();
@@ -948,15 +952,41 @@
         layer.enact();
     }
 
-    window.addEventListener('click', (e) => {
+    // clickが発火しない環境に備えてtouchendでも拾う(同一タップは500msで重複排除)
+    let lastTapAt = 0;
+    function handleTap(e) {
         if (e.target.closest('#start-button, #error-panel, #log-panel')) return;
+        const now = performance.now();
+        if (now - lastTapAt < 500) return;
+        lastTapAt = now;
         // iOSはジェスチャ外で作られたAudioContextをsuspendedのままにするため、
         // タップ(ジェスチャ)のたびに再開を試みて音を確実に有効化する
         if (audioCtx && audioCtx.state === 'suspended' && !experienceEnded) {
             audioCtx.resume().catch(() => {});
         }
+        ExperimentLog.add('tap', { type: e.type });
         onPeel();
-    });
+    }
+    window.addEventListener('click', handleTap);
+    window.addEventListener('touchend', handleTap);
+
+    // ---- デバッグ表示 (URLに ?debug=1 を付けると内部状態を画面下に表示) ----
+    if (/[?&]debug=1/.test(location.search)) {
+        const dbg = document.getElementById('debug-panel');
+        dbg.style.display = 'block';
+        setInterval(() => {
+            const ev = ExperimentLog.events.slice(-7)
+                .map(x => Math.round(x.t / 100) / 10 + 's ' + x.event + (x.detail ? ' ' + JSON.stringify(x.detail) : ''))
+                .join('\n');
+            dbg.textContent =
+                'audio:' + (audioCtx ? audioCtx.state : 'none') +
+                ' static:' + isStatic +
+                ' layer:' + layerIndex +
+                ' started:' + experienceStarted +
+                ' gyroPerm:' + orientationPermissionState +
+                ' gyroActive:' + orientationActive + '\n' + ev;
+        }, 400);
+    }
 
     /* ================================================================
      * 起動シーケンス
@@ -993,6 +1023,14 @@
     document.getElementById('start-button').addEventListener('click', async function() {
         if (bootPhase === 0) {
             bootPhase = 1;
+            // タップ直後(ジェスチャ内)にAudioContextを生成すると
+            // iOSでも最初からrunningになり、確実に音が出る
+            initAudio();
+            const unlock = audioCtx.createBufferSource();
+            unlock.buffer = audioCtx.createBuffer(1, 1, 22050);
+            unlock.connect(audioCtx.destination);
+            unlock.start(0);
+            if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
             await requestOrientationPermission();
             this.innerText = 'つづける ── カメラをひらく';
             return;
