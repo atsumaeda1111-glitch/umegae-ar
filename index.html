@@ -1,0 +1,975 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>梅ヶ枝 - 現象学的ブーストAR (Proto 1.2)</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Hiragino Mincho ProN', serif;
+            color: #faf8f5;
+        }
+        #video-background {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            object-fit: cover;
+            z-index: 0;
+            pointer-events: none;
+        }
+        #canvas-container {
+            width: 100vw; height: 100vh;
+            position: absolute;
+            top: 0; left: 0;
+            z-index: 1;
+            pointer-events: none;
+        }
+        #overlay-ui {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            z-index: 10;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            align-items: center;
+            pointer-events: none;
+            box-sizing: border-box;
+            padding: 40px 20px;
+        }
+        .hud-text {
+            font-size: 14px;
+            letter-spacing: 0.15em;
+            text-shadow: 0 0 8px rgba(0,0,0,0.9);
+            opacity: 0;
+            transition: opacity 1.5s ease;
+            background: rgba(0,0,0,0.4);
+            padding: 5px 10px;
+            border-radius: 4px;
+            text-align: center;
+        }
+        #start-button {
+            position: absolute;
+            z-index: 100;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            padding: 15px 30px;
+            background: rgba(26, 42, 58, 0.9);
+            border: 1px solid #cb5a3e;
+            color: #faf8f5;
+            font-family: inherit;
+            font-size: 16px;
+            letter-spacing: 0.1em;
+            cursor: pointer;
+            border-radius: 2px;
+            pointer-events: auto;
+        }
+        #reticle {
+            width: 40px; height: 40px;
+            border: 1px solid rgba(250, 248, 245, 0.4);
+            border-radius: 50%;
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 5;
+            transition: border-color 0.5s ease, transform 0.5s ease, opacity 1s ease;
+        }
+        /* ---- タスク3: エラー/フォールバックUI ---- */
+        #error-panel {
+            display: none;
+            position: absolute;
+            z-index: 200;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            width: min(85vw, 420px);
+            background: rgba(15, 20, 26, 0.95);
+            border: 1px solid #cb5a3e;
+            border-radius: 4px;
+            padding: 24px 20px;
+            box-sizing: border-box;
+            pointer-events: auto;
+            font-size: 13px;
+            line-height: 1.8;
+        }
+        #error-panel h2 { font-size: 15px; margin: 0 0 10px; color: #e8a08c; }
+        #error-panel button {
+            display: block;
+            width: 100%;
+            margin-top: 14px;
+            padding: 12px;
+            background: rgba(203, 90, 62, 0.85);
+            border: none;
+            color: #fff;
+            font-family: inherit;
+            font-size: 14px;
+            letter-spacing: 0.1em;
+            cursor: pointer;
+            border-radius: 2px;
+        }
+        #error-panel button.secondary { background: rgba(80, 90, 100, 0.7); }
+        /* ---- タスク4: 体験終了後のログパネル ---- */
+        #log-panel {
+            display: none;
+            position: absolute;
+            z-index: 150;
+            bottom: 16px; left: 50%;
+            transform: translateX(-50%);
+            pointer-events: auto;
+            text-align: center;
+        }
+        #log-panel button {
+            margin: 4px;
+            padding: 8px 16px;
+            background: rgba(26, 42, 58, 0.85);
+            border: 1px solid rgba(250,248,245,0.35);
+            color: #faf8f5;
+            font-family: inherit;
+            font-size: 12px;
+            letter-spacing: 0.08em;
+            cursor: pointer;
+            border-radius: 2px;
+        }
+        #log-status { font-size: 11px; opacity: 0.7; margin-top: 4px; }
+        /* 白フェード(4枚目のシャットアウト用ではなく朝霧の補助) */
+        #mist-veil {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            background: radial-gradient(ellipse at 50% 60%, rgba(240,242,245,0.35), rgba(240,242,245,0) 70%);
+            z-index: 2;
+            opacity: 0;
+            transition: opacity 3s ease;
+            pointer-events: none;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <button id="start-button">静寂をひらく</button>
+    <video id="video-background" autoplay playsinline muted></video>
+    <div id="mist-veil"></div>
+    <div id="reticle"></div>
+    <div id="canvas-container"></div>
+
+    <div id="overlay-ui">
+        <div id="hud-top" class="hud-text">梅ヶ枝を中央に捉え、静止してください</div>
+        <div id="hud-bottom" class="hud-text">剥がすたびに、一歩進む</div>
+    </div>
+
+    <div id="error-panel">
+        <h2 id="error-title"></h2>
+        <div id="error-body"></div>
+    </div>
+
+    <div id="log-panel">
+        <button id="btn-send-log">実験ログを送信</button>
+        <button id="btn-csv-log">CSVを保存</button>
+        <div id="log-status"></div>
+    </div>
+
+    <script>
+    'use strict';
+
+    /* ================================================================
+     * 梅ヶ枝 現象学的ブーストAR Proto v1.2
+     *  タスク1: 4層の身体同期ナラティブ(剥がす = 伊予街道の歩み)
+     *  タスク2: 高周波トランジエント特化のオーディオグラフ
+     *  タスク3: カメラ/センサーの堅牢な起動とフォールバック
+     *  タスク4: 3群間比較実験用ミリ秒ログ(GAS送信 + CSV出力)
+     * ================================================================ */
+
+    // ---- 実験条件 (URLに ?cond=A / ?cond=B / ?cond=C を付与して切替) ----
+    const CONDITION = (function() {
+        const m = location.search.match(/[?&]cond=([ABC])/i);
+        return m ? m[1].toUpperCase() : 'C'; // 本システム = C群(引き算のAR)
+    })();
+
+    // ---- グローバル状態 ----
+    let audioCtx = null;
+    let masterGain, ambienceGain;          // 演出音の全体系統
+    let scene, camera, renderer;
+    let shadowMesh, mistParticles, komorebiGroup;
+    let isStatic = false;
+    let staticTimer = 0;
+    let layerIndex = 0;                    // 0=未開始, 1..4=剥がした枚数
+    let experienceStarted = false;
+    let experienceEnded = false;
+    let orientationActive = false;
+    let cameraActive = false;
+    let lastOrientationTs = 0;
+    let lastAlpha = null, lastBeta = null, lastGamma = null;
+    const MOTION_THRESHOLD = 0.8;
+    const STATIC_HOLD_MS = 2000;
+
+    // 継続音(風・霧)のノードを層ごとに保持して4枚目で全停止できるようにする
+    const sustainedNodes = [];
+
+    const hudTop = document.getElementById('hud-top');
+    const hudBottom = document.getElementById('hud-bottom');
+    const reticle = document.getElementById('reticle');
+    const videoElement = document.getElementById('video-background');
+    const mistVeil = document.getElementById('mist-veil');
+
+    /* ================================================================
+     * タスク4: 実験ログ (ミリ秒単位)
+     * ================================================================ */
+    const ExperimentLog = {
+        sessionId: 'S' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+        t0: performance.now(),
+        events: [],
+        peelTimestamps: [],       // 各層を剥がした時刻 (ms, t0基準)
+        staticEnteredAt: null,    // 静止状態に入った時刻
+        totalStaticMs: 0,
+
+        now() { return Math.round((performance.now() - this.t0) * 1000) / 1000; },
+
+        add(event, detail) {
+            this.events.push({ t: this.now(), event: event, detail: detail || null });
+        },
+
+        markStatic(state) {
+            const t = this.now();
+            if (state && this.staticEnteredAt === null) {
+                this.staticEnteredAt = t;
+                this.add('static_enter');
+            } else if (!state && this.staticEnteredAt !== null) {
+                this.totalStaticMs += t - this.staticEnteredAt;
+                this.add('static_exit', { heldMs: t - this.staticEnteredAt });
+                this.staticEnteredAt = null;
+            }
+        },
+
+        markPeel(layer) {
+            const t = this.now();
+            this.peelTimestamps.push(t);
+            const intervals = this.peelIntervals();
+            this.add('peel', {
+                layer: layer,
+                intervalMs: intervals.length ? intervals[intervals.length - 1] : null
+            });
+        },
+
+        peelIntervals() {
+            const out = [];
+            for (let i = 1; i < this.peelTimestamps.length; i++) {
+                out.push(Math.round((this.peelTimestamps[i] - this.peelTimestamps[i - 1]) * 1000) / 1000);
+            }
+            return out;
+        },
+
+        summary() {
+            // 静止中のまま終わった場合は残り時間を加算
+            let totalStatic = this.totalStaticMs;
+            if (this.staticEnteredAt !== null) totalStatic += this.now() - this.staticEnteredAt;
+
+            const intervals = this.peelIntervals();
+            const mean = intervals.length
+                ? intervals.reduce((a, b) => a + b, 0) / intervals.length : 0;
+            const variance = intervals.length
+                ? intervals.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / intervals.length : 0;
+
+            return {
+                totalDurationMs: Math.round(this.now()),
+                totalStaticMs: Math.round(totalStatic),
+                staticRatio: this.now() > 0
+                    ? Math.round(totalStatic / this.now() * 1000) / 1000 : 0,
+                peelCount: this.peelTimestamps.length,
+                peelIntervalsMs: intervals,
+                peelIntervalMeanMs: Math.round(mean),
+                peelIntervalVarianceMs2: Math.round(variance),
+                peelIntervalSdMs: Math.round(Math.sqrt(variance)),
+                cameraOk: cameraActive,
+                orientationOk: orientationActive,
+                completed: layerIndex >= 4
+            };
+        },
+
+        payload() {
+            return JSON.stringify({
+                sessionId: this.sessionId,
+                condition: CONDITION,
+                userAgent: navigator.userAgent,
+                summary: this.summary(),
+                events: this.events
+            });
+        },
+
+        toCsv() {
+            const esc = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+            const lines = ['sessionId,tMs,event,detail'];
+            this.events.forEach(e => {
+                lines.push([this.sessionId, e.t, e.event,
+                    esc(JSON.stringify(e.detail || ''))].join(','));
+            });
+            const s = this.summary();
+            lines.push('');
+            lines.push('summaryKey,value');
+            Object.keys(s).forEach(k => lines.push(k + ',' + esc(JSON.stringify(s[k]))));
+            return lines.join('\n');
+        }
+    };
+
+    function sendLogToServer() {
+        const status = document.getElementById('log-status');
+        status.textContent = '送信中…';
+        ExperimentLog.add('log_send_attempt');
+        if (typeof google !== 'undefined' && google.script && google.script.run) {
+            // GAS内で表示されている場合は直接呼び出し
+            google.script.run
+                .withSuccessHandler(res => {
+                    status.textContent = res && res.ok
+                        ? '送信完了(スプレッドシートに記録)'
+                        : '送信エラー: ' + (res && res.error);
+                })
+                .withFailureHandler(err => {
+                    status.textContent = '送信失敗: ' + err + ' / CSV保存をご利用ください';
+                })
+                .saveExperimentLog(ExperimentLog.payload());
+        } else if (/^https:\/\//.test(GAS_ENDPOINT)) {
+            // 外部ホスティングからはGASのdoPostへ送信。
+            // GASはCORSヘッダーを返さないため no-cors(結果は読めないが送信は完了する)
+            fetch(GAS_ENDPOINT, { method: 'POST', mode: 'no-cors', body: ExperimentLog.payload() })
+                .then(() => { status.textContent = '送信しました(スプレッドシートをご確認ください)'; })
+                .catch(err => { status.textContent = '送信失敗: ' + err + ' / CSV保存をご利用ください'; });
+        } else {
+            status.textContent = '送信先が未設定です。CSV保存をご利用ください。';
+        }
+    }
+
+    function downloadCsv() {
+        const blob = new Blob(['﻿' + ExperimentLog.toCsv()], { type: 'text/csv;charset=utf-8' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'umegae_ar_log_' + ExperimentLog.sessionId + '.csv';
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+    }
+
+    document.getElementById('btn-send-log').addEventListener('click', sendLogToServer);
+    document.getElementById('btn-csv-log').addEventListener('click', downloadCsv);
+
+    /* ================================================================
+     * タスク3: カメラ/センサーの堅牢な起動
+     * ================================================================ */
+    function showErrorPanel(title, bodyHtml, buttons) {
+        const panel = document.getElementById('error-panel');
+        document.getElementById('error-title').textContent = title;
+        const body = document.getElementById('error-body');
+        body.innerHTML = bodyHtml;
+        panel.querySelectorAll('button').forEach(b => b.remove());
+        (buttons || []).forEach(def => {
+            const b = document.createElement('button');
+            b.textContent = def.label;
+            if (def.secondary) b.className = 'secondary';
+            b.addEventListener('click', def.onClick);
+            panel.appendChild(b);
+        });
+        panel.style.display = 'block';
+    }
+
+    function hideErrorPanel() {
+        document.getElementById('error-panel').style.display = 'none';
+    }
+
+    // GASはiframe(googleusercontent.com)内で動くため、環境によっては
+    // カメラ許可ダイアログが出ない。その場合は公開URL(/exec)を新規タブで
+    // 開き直す。iframe自身のURL(userCodeAppPanel)はリクエストごとの
+    // 一時URLなので直接開いてはいけない(真っ白なページになる)。
+    // EXEC_URL はGASテンプレートがデプロイ時に埋め込む。
+    // 外部ホスティング時はスクリプトレットが評価されないため、固定値を使う。
+    const EXEC_URL = '<?!= ScriptApp.getService().getUrl() ?>';
+    const GAS_ENDPOINT = /^https:\/\//.test(EXEC_URL)
+        ? EXEC_URL
+        : 'https://script.google.com/macros/s/AKfycbzPIxcYwI9yr_955EoaaGZ95E2XvWrRzXgNMDRRjmx7sxiDtg1SWF2CsEImgjOilKPr/exec';
+    function openSelfInNewTab() {
+        const url = /^https:\/\//.test(EXEC_URL) ? EXEC_URL + location.search : location.href;
+        window.open(url, '_blank');
+    }
+
+    function isFramed() {
+        try { return window.self !== window.top; } catch (e) { return true; }
+    }
+
+    async function setupCamera() {
+        // 事前チェック: セキュアコンテキストとAPIの存在
+        if (!window.isSecureContext) {
+            throw { kind: 'insecure', message: 'HTTPSではないためカメラを利用できません。' };
+        }
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            throw { kind: 'unsupported', message: 'このブラウザはカメラAPIに対応していません。' };
+        }
+
+        // 背面カメラ優先 → 失敗したら制約を緩めて再試行
+        const attempts = [
+            { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
+            { video: { facingMode: 'environment' }, audio: false },
+            { video: true, audio: false }
+        ];
+        let lastError = null;
+        for (const constraints of attempts) {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                videoElement.srcObject = stream;
+                await videoElement.play().catch(() => {}); // 自動再生失敗は無視(muted+playsinlineでほぼ発生しない)
+                cameraActive = true;
+                ExperimentLog.add('camera_ok', { constraints: JSON.stringify(constraints.video) });
+                return;
+            } catch (err) {
+                lastError = err;
+                // 権限拒否・ポリシーブロックは制約を変えても直らないため即座に抜ける
+                if (err && (err.name === 'NotAllowedError' || err.name === 'SecurityError')) break;
+            }
+        }
+        throw lastError || { kind: 'unknown', message: '原因不明のカメラエラー' };
+    }
+
+    function handleCameraError(err) {
+        cameraActive = false;
+        const name = err && err.name;
+        ExperimentLog.add('camera_error', { name: name || err.kind, message: String(err.message || err) });
+
+        const retryBtn = { label: '再試行', onClick: () => { hideErrorPanel(); startExperience(); } };
+        const skipBtn = { label: 'カメラなしで続行', secondary: true, onClick: () => { hideErrorPanel(); proceedWithoutCamera(); } };
+        const newTabBtn = { label: 'フルスクリーンで開く(推奨)', onClick: openSelfInNewTab };
+
+        if (name === 'NotAllowedError' || name === 'SecurityError') {
+            if (isFramed()) {
+                // GASのiframeによるブロックの可能性が高い
+                showErrorPanel('カメラがブロックされています',
+                    'このページは埋め込み(iframe)内で動作しており、ブラウザの制限で' +
+                    'カメラ許可ダイアログが表示できない場合があります。<br>' +
+                    '下のボタンでページを直接開き直すと解決します。',
+                    [newTabBtn, skipBtn]);
+            } else {
+                showErrorPanel('カメラの許可が必要です',
+                    'ブラウザの設定でこのサイトのカメラを「許可」に変更してから再試行してください。<br>' +
+                    '(iOS: 設定 → Safari → カメラ / Android: アドレスバーの鍵アイコン → 権限)',
+                    [retryBtn, skipBtn]);
+            }
+        } else if (name === 'NotFoundError' || name === 'OverconstrainedError') {
+            showErrorPanel('カメラが見つかりません',
+                '利用可能なカメラが検出できませんでした。他のアプリがカメラを使用中でないか確認してください。',
+                [retryBtn, skipBtn]);
+        } else if (name === 'NotReadableError') {
+            showErrorPanel('カメラを起動できません',
+                '他のアプリまたはタブがカメラを使用中の可能性があります。閉じてから再試行してください。',
+                [retryBtn, skipBtn]);
+        } else if (err && err.kind === 'insecure') {
+            showErrorPanel('セキュリティ制限', err.message + '<br>URLが https:// で始まっているか確認してください。', [skipBtn]);
+        } else if (err && err.kind === 'unsupported') {
+            showErrorPanel('非対応ブラウザ', err.message + '<br>SafariまたはChromeの最新版でお試しください。', [skipBtn]);
+        } else {
+            showErrorPanel('カメラエラー', String((err && err.message) || err), [retryBtn, skipBtn]);
+        }
+    }
+
+    function proceedWithoutCamera() {
+        // カメラなしでも体験は継続(黒背景 + 音響 + 演出)
+        ExperimentLog.add('camera_skipped');
+        continueBoot();
+    }
+
+    async function setupOrientation() {
+        if (typeof DeviceOrientationEvent === 'undefined') {
+            ExperimentLog.add('orientation_unsupported');
+            return false;
+        }
+        // iOS 13+: ユーザージェスチャ内での明示的許可が必須
+        if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+            try {
+                const state = await DeviceOrientationEvent.requestPermission();
+                if (state !== 'granted') {
+                    ExperimentLog.add('orientation_denied', { state: state });
+                    return false;
+                }
+            } catch (err) {
+                // ジェスチャ外で呼ばれた等
+                ExperimentLog.add('orientation_request_error', { message: String(err) });
+                return false;
+            }
+        }
+        window.addEventListener('deviceorientation', handleOrientation);
+
+        // イベントが実際に届くか3秒間監視(iframe内では登録できても発火しないことがある)
+        return new Promise(resolve => {
+            setTimeout(() => {
+                if (lastOrientationTs > 0) {
+                    orientationActive = true;
+                    ExperimentLog.add('orientation_ok');
+                    resolve(true);
+                } else {
+                    window.removeEventListener('deviceorientation', handleOrientation);
+                    ExperimentLog.add('orientation_no_events');
+                    resolve(false);
+                }
+            }, 3000);
+        });
+    }
+
+    function enableFallbackStaticMode() {
+        // ジャイロが使えない環境: 長押し(600ms)を「静止」の代替とする
+        ExperimentLog.add('fallback_static_mode');
+        hudTop.innerText = '画面を長押しして、心を静めてください';
+        hudTop.style.opacity = '1';
+        let holdTimer = null;
+        const start = () => {
+            holdTimer = setTimeout(() => setStaticState(true), 600);
+        };
+        const cancel = () => { clearTimeout(holdTimer); };
+        window.addEventListener('touchstart', start, { passive: true });
+        window.addEventListener('touchend', cancel, { passive: true });
+        window.addEventListener('mousedown', start);
+        window.addEventListener('mouseup', cancel);
+        // フォールバックでは一度静止に入ったら維持する(操作の複雑化を防ぐ)
+    }
+
+    /* ================================================================
+     * タスク2: オーディオグラフ
+     *
+     *   各音源 ─→ (音源別フィルタ) ─→ ambienceGain ┐
+     *   剥離音 ─→ bandpass(層別)  ──────────────────┤
+     *                                               ▼
+     *                        highpass 200Hz (環境低域ノイズ帯を遮断)
+     *                                               ▼
+     *                        peaking 3kHz +9dB Q0.9 (1.5k-6kHzの
+     *                        トランジエント帯域をブースト)
+     *                                               ▼
+     *                        DynamicsCompressor (店頭騒音に埋もれない
+     *                        よう平均音圧を持ち上げつつピークを保護)
+     *                                               ▼
+     *                        masterGain → destination
+     * ================================================================ */
+    function initAudio() {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+        const highpass = audioCtx.createBiquadFilter();
+        highpass.type = 'highpass';
+        highpass.frequency.value = 200;   // 200Hz以下の帯域を出力から排除
+        highpass.Q.value = 0.7;
+
+        const presence = audioCtx.createBiquadFilter();
+        presence.type = 'peaking';
+        presence.frequency.value = 3000;  // 1.5k-6kHz帯の中心
+        presence.Q.value = 0.9;           // 帯域幅 ≒ 1.6k-5.6kHz
+        presence.gain.value = 9;
+
+        const compressor = audioCtx.createDynamicsCompressor();
+        compressor.threshold.value = -24;
+        compressor.knee.value = 12;
+        compressor.ratio.value = 4;
+        compressor.attack.value = 0.002;  // トランジエントの立ち上がりを潰さない
+        compressor.release.value = 0.15;
+
+        masterGain = audioCtx.createGain();
+        masterGain.gain.value = 1.0;
+
+        ambienceGain = audioCtx.createGain();
+        ambienceGain.gain.value = 1.0;
+
+        ambienceGain.connect(highpass);
+        highpass.connect(presence);
+        presence.connect(compressor);
+        compressor.connect(masterGain);
+        masterGain.connect(audioCtx.destination);
+
+        ExperimentLog.add('audio_init', { sampleRate: audioCtx.sampleRate });
+    }
+
+    // 減衰エンベロープ付きノイズバッファ(剥離音・摩擦音の素体)
+    function makeNoiseBuffer(durationSec, decayPow) {
+        const len = Math.floor(audioCtx.sampleRate * durationSec);
+        const buffer = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < len; i++) {
+            data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decayPow);
+        }
+        return buffer;
+    }
+
+    // 「ペリッ」剥離音: 高周波帯のバンドパスノイズ + 立ち上がり強調
+    function playPeelSound(layer) {
+        const source = audioCtx.createBufferSource();
+        source.buffer = makeNoiseBuffer(0.25, 5);
+        source.playbackRate.value = 0.9 + layer * 0.12; // 層が進むほど乾いた高い音に
+
+        const bp = audioCtx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.value = 2500 + layer * 700;  // 2.5k → 4.6kHz
+        bp.Q.value = 2.5;
+
+        const g = audioCtx.createGain();
+        g.gain.setValueAtTime(1.4, audioCtx.currentTime);
+
+        source.connect(bp); bp.connect(g); g.connect(ambienceGain);
+        source.start();
+    }
+
+    // 1枚目: 衣擦れ(サーッという柔らかい高域ノイズを2回)
+    function playClothRustle() {
+        for (let k = 0; k < 2; k++) {
+            const t = audioCtx.currentTime + k * 0.35;
+            const src = audioCtx.createBufferSource();
+            src.buffer = makeNoiseBuffer(0.4, 2);
+            const bp = audioCtx.createBiquadFilter();
+            bp.type = 'bandpass';
+            bp.frequency.value = 4000;
+            bp.Q.value = 1.2;
+            const g = audioCtx.createGain();
+            g.gain.setValueAtTime(0, t);
+            g.gain.linearRampToValueAtTime(0.5, t + 0.1);
+            g.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
+            src.connect(bp); bp.connect(g); g.connect(ambienceGain);
+            src.start(t);
+        }
+    }
+
+    // 2枚目: 足音「サクッ」×3歩 + 左右に流れる風
+    function playFootstepsAndWind() {
+        // 足音: 短いバースト、歩行リズム(約600ms間隔)
+        for (let k = 0; k < 3; k++) {
+            const t = audioCtx.currentTime + 0.2 + k * 0.6;
+            const src = audioCtx.createBufferSource();
+            src.buffer = makeNoiseBuffer(0.09, 6);
+            const bp = audioCtx.createBiquadFilter();
+            bp.type = 'bandpass';
+            bp.frequency.value = 3200;
+            bp.Q.value = 1.8;
+            const pan = audioCtx.createStereoPanner ? audioCtx.createStereoPanner() : null;
+            const g = audioCtx.createGain();
+            g.gain.value = 1.1;
+            src.connect(bp);
+            if (pan) { pan.pan.value = (k % 2 === 0) ? -0.3 : 0.3; bp.connect(pan); pan.connect(g); }
+            else { bp.connect(g); }
+            g.connect(ambienceGain);
+            src.start(t);
+        }
+        // 風: ループするノイズをLFOで左右に定位移動(4枚目で停止するため登録)
+        const wind = audioCtx.createBufferSource();
+        wind.buffer = makeNoiseBuffer(2.0, 0.5);
+        wind.loop = true;
+        const windBp = audioCtx.createBiquadFilter();
+        windBp.type = 'bandpass';
+        windBp.frequency.value = 1800;
+        windBp.Q.value = 0.6;
+        const windGain = audioCtx.createGain();
+        windGain.gain.setValueAtTime(0, audioCtx.currentTime);
+        windGain.gain.linearRampToValueAtTime(0.18, audioCtx.currentTime + 2);
+        wind.connect(windBp);
+        if (audioCtx.createStereoPanner) {
+            const windPan = audioCtx.createStereoPanner();
+            const lfo = audioCtx.createOscillator();
+            const lfoGain = audioCtx.createGain();
+            lfo.frequency.value = 0.08;
+            lfoGain.gain.value = 0.7;
+            lfo.connect(lfoGain); lfoGain.connect(windPan.pan);
+            lfo.start();
+            windBp.connect(windPan); windPan.connect(windGain);
+            sustainedNodes.push(lfo);
+        } else {
+            windBp.connect(windGain);
+        }
+        windGain.connect(ambienceGain);
+        wind.start();
+        sustainedNodes.push(wind);
+    }
+
+    // 3枚目: 金刀比羅宮の鐘(高次倍音の重ね合わせ、長い減衰)
+    function playBell() {
+        const t = audioCtx.currentTime + 0.1;
+        const partials = [
+            { f: 1760, gain: 0.5, decay: 3.5 },
+            { f: 2640, gain: 0.3, decay: 2.8 },
+            { f: 4180, gain: 0.18, decay: 2.0 },
+            { f: 5290, gain: 0.1, decay: 1.4 }
+        ];
+        partials.forEach(p => {
+            const osc = audioCtx.createOscillator();
+            osc.type = 'sine';
+            osc.frequency.value = p.f;
+            const g = audioCtx.createGain();
+            g.gain.setValueAtTime(0, t);
+            g.gain.linearRampToValueAtTime(p.gain, t + 0.02);
+            g.gain.exponentialRampToValueAtTime(0.0005, t + p.decay);
+            osc.connect(g); g.connect(ambienceGain);
+            osc.start(t);
+            osc.stop(t + p.decay + 0.1);
+        });
+    }
+
+    // 4枚目: 全音響を「フッ」とシャットアウト
+    function silenceAll() {
+        const t = audioCtx.currentTime;
+        // 0.4秒で完全無音へ(クリックノイズ防止のため指数減衰)
+        masterGain.gain.setValueAtTime(masterGain.gain.value, t);
+        masterGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.4);
+        sustainedNodes.forEach(n => {
+            try { n.stop(t + 0.45); } catch (e) {}
+        });
+        sustainedNodes.length = 0;
+        setTimeout(() => { try { audioCtx.suspend(); } catch (e) {} }, 600);
+    }
+
+    /* ================================================================
+     * 3D描画 (背景透過 + 層別ビジュアル)
+     * ================================================================ */
+    function init3D() {
+        const container = document.getElementById('canvas-container');
+        scene = new THREE.Scene();
+        camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = 5;
+
+        renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        container.appendChild(renderer.domElement);
+
+        // 静止時に現れる「気配」のリング
+        const geometry = new THREE.RingGeometry(0.1, 1.2, 32);
+        const material = new THREE.MeshBasicMaterial({
+            color: 0x000000, transparent: true, opacity: 0.0, side: THREE.DoubleSide
+        });
+        shadowMesh = new THREE.Mesh(geometry, material);
+        scene.add(shadowMesh);
+
+        // 1枚目: 朝霧パーティクル(最初は不可視)
+        const mistGeo = new THREE.BufferGeometry();
+        const mistCount = 120;
+        const positions = new Float32Array(mistCount * 3);
+        for (let i = 0; i < mistCount; i++) {
+            positions[i * 3] = (Math.random() - 0.5) * 12;
+            positions[i * 3 + 1] = (Math.random() - 0.5) * 8;
+            positions[i * 3 + 2] = (Math.random() - 0.5) * 4;
+        }
+        mistGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        const mistMat = new THREE.PointsMaterial({
+            color: 0xf0f2f5, size: 0.25, transparent: true, opacity: 0.0,
+            depthWrite: false, blending: THREE.AdditiveBlending
+        });
+        mistParticles = new THREE.Points(mistGeo, mistMat);
+        scene.add(mistParticles);
+
+        // 3枚目: 木漏れ日(加算合成の光点群、最初は不可視)
+        komorebiGroup = new THREE.Group();
+        for (let i = 0; i < 7; i++) {
+            const circle = new THREE.Mesh(
+                new THREE.CircleGeometry(0.25 + Math.random() * 0.4, 24),
+                new THREE.MeshBasicMaterial({
+                    color: 0xfff3d6, transparent: true, opacity: 0.0,
+                    depthWrite: false, blending: THREE.AdditiveBlending
+                })
+            );
+            circle.position.set((Math.random() - 0.5) * 6, (Math.random() - 0.5) * 5, -1);
+            circle.userData.phase = Math.random() * Math.PI * 2;
+            komorebiGroup.add(circle);
+        }
+        scene.add(komorebiGroup);
+
+        window.addEventListener('resize', onWindowResize);
+        animate();
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+        const now = Date.now();
+
+        if (experienceEnded) {
+            // 4枚目以降: すべてを消灯したまま描画のみ継続
+            shadowMesh.material.opacity = THREE.MathUtils.lerp(shadowMesh.material.opacity, 0, 0.15);
+            mistParticles.material.opacity = THREE.MathUtils.lerp(mistParticles.material.opacity, 0, 0.15);
+            komorebiGroup.children.forEach(c => {
+                c.material.opacity = THREE.MathUtils.lerp(c.material.opacity, 0, 0.15);
+            });
+        } else {
+            // 静止の「気配」リング
+            if (isStatic && shadowMesh.material.opacity < 0.4) {
+                const wave = Math.sin(now * 0.002) * 0.03 + 0.3;
+                shadowMesh.material.opacity = THREE.MathUtils.lerp(shadowMesh.material.opacity, wave, 0.05);
+            } else if (!isStatic) {
+                shadowMesh.material.opacity = THREE.MathUtils.lerp(shadowMesh.material.opacity, 0.0, 0.1);
+            }
+            // 朝霧: 1枚目以降ゆっくり漂う
+            if (layerIndex >= 1 && layerIndex < 4) {
+                mistParticles.material.opacity = THREE.MathUtils.lerp(mistParticles.material.opacity, 0.35, 0.01);
+                mistParticles.rotation.y += 0.0004;
+                mistParticles.position.y = Math.sin(now * 0.0005) * 0.2;
+            }
+            // 木漏れ日: 3枚目でゆらめきながら点灯
+            if (layerIndex >= 3 && layerIndex < 4) {
+                komorebiGroup.children.forEach(c => {
+                    const target = 0.25 + Math.sin(now * 0.001 + c.userData.phase) * 0.1;
+                    c.material.opacity = THREE.MathUtils.lerp(c.material.opacity, Math.max(target, 0), 0.02);
+                });
+            }
+        }
+        renderer.render(scene, camera);
+    }
+
+    function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    /* ================================================================
+     * ジャイロによる静止アフォーダンス判定
+     * ================================================================ */
+    function handleOrientation(event) {
+        lastOrientationTs = performance.now();
+        if (event.alpha === null && event.beta === null) return;
+
+        if (lastAlpha === null) {
+            lastAlpha = event.alpha; lastBeta = event.beta; lastGamma = event.gamma;
+            return;
+        }
+        // alphaは0/360をまたぐため最短角度差で評価する
+        let dAlpha = Math.abs(event.alpha - lastAlpha);
+        if (dAlpha > 180) dAlpha = 360 - dAlpha;
+        const diff = dAlpha + Math.abs(event.beta - lastBeta) + Math.abs(event.gamma - lastGamma);
+
+        if (diff < MOTION_THRESHOLD) {
+            staticTimer += 16.7;
+            if (staticTimer > STATIC_HOLD_MS) setStaticState(true);
+        } else {
+            staticTimer = 0;
+            setStaticState(false);
+        }
+        lastAlpha = event.alpha; lastBeta = event.beta; lastGamma = event.gamma;
+    }
+
+    function setStaticState(state) {
+        if (isStatic === state) return;
+        isStatic = state;
+        ExperimentLog.markStatic(state);
+        if (experienceEnded) return;
+        if (state) {
+            reticle.style.borderColor = 'rgba(203, 90, 62, 0.8)';
+            reticle.style.transform = 'translate(-50%, -50%) scale(1.1)';
+            hudTop.style.opacity = '1';
+        } else {
+            reticle.style.borderColor = 'rgba(250, 248, 245, 0.4)';
+            reticle.style.transform = 'translate(-50%, -50%) scale(1.0)';
+            hudTop.style.opacity = '0.3';
+        }
+    }
+
+    /* ================================================================
+     * タスク1: 剥がす行為と「伊予街道の歩み」の同期ナラティブ
+     * ================================================================ */
+    const LAYERS = [
+        null,
+        {   // 1枚目: 出発
+            text: '一枚目 ── 朝霧の中、街道へ踏み出す',
+            enact() {
+                playClothRustle();
+                mistVeil.style.opacity = '1';               // 画面全体の朝霧
+                hudTop.innerText = '霧のむこうに、道がつづく';
+            }
+        },
+        {   // 2枚目: 歩み
+            text: '二枚目 ── 土を踏み、伊予街道の風を聞く',
+            enact() {
+                playFootstepsAndWind();
+                mistVeil.style.opacity = '0.5';             // 霧が晴れはじめる
+                hudTop.innerText = '風が、頬をなでていく';
+            }
+        },
+        {   // 3枚目: 結界
+            text: '三枚目 ── 遠く、金刀比羅の鐘が響く',
+            enact() {
+                playBell();
+                mistVeil.style.opacity = '0';
+                hudTop.innerText = '木漏れ日が、掌の餅を照らす';
+            }
+        },
+        {   // 4枚目: 到達 = 完全な静寂
+            text: '',
+            enact() {
+                silenceAll();                                // 音の全遮断
+                experienceEnded = true;                      // 光の全消灯 (animate側)
+                mistVeil.style.opacity = '0';
+                hudTop.style.opacity = '0';
+                hudBottom.style.opacity = '0';
+                reticle.style.opacity = '0';
+                ExperimentLog.add('experience_complete');
+                // 静寂を5秒守ってからログUIだけを静かに出す
+                setTimeout(() => {
+                    document.getElementById('log-panel').style.display = 'block';
+                }, 5000);
+            }
+        }
+    ];
+
+    function onPeel() {
+        if (!experienceStarted || experienceEnded) return;
+        if (!isStatic) {
+            ExperimentLog.add('peel_rejected_not_static');
+            return;
+        }
+        if (layerIndex >= 4) return;
+
+        layerIndex++;
+        ExperimentLog.markPeel(layerIndex);
+
+        const layer = LAYERS[layerIndex];
+        if (layerIndex < 4) {
+            playPeelSound(layerIndex);   // 剥離音は全層共通(層が進むほど高く)
+            hudBottom.innerText = layer.text;
+            hudBottom.style.opacity = '1';
+        }
+        layer.enact();
+    }
+
+    window.addEventListener('click', (e) => {
+        if (e.target.closest('#start-button, #error-panel, #log-panel')) return;
+        onPeel();
+    });
+
+    /* ================================================================
+     * 起動シーケンス
+     * ================================================================ */
+    async function startExperience() {
+        ExperimentLog.add('start_pressed', { condition: CONDITION, framed: isFramed() });
+        try {
+            await setupCamera();
+        } catch (err) {
+            handleCameraError(err);
+            return; // エラーパネルのボタン経由で再試行 or スキップ
+        }
+        await continueBoot();
+    }
+
+    async function continueBoot() {
+        initAudio();
+        init3D();
+        // AudioContextはユーザージェスチャ直後でないと再開できない場合がある
+        if (audioCtx.state === 'suspended') await audioCtx.resume().catch(() => {});
+
+        const gyroOk = await setupOrientation();
+        if (!gyroOk) enableFallbackStaticMode();
+
+        hudTop.style.opacity = '0.3';
+        hudBottom.style.opacity = '1';
+        experienceStarted = true;
+        ExperimentLog.add('experience_start', { gyro: gyroOk, camera: cameraActive });
+    }
+
+    document.getElementById('start-button').addEventListener('click', async function() {
+        this.style.display = 'none';
+        await startExperience();
+    });
+
+    // ページ離脱時: 未完了でもログを保全(sendBeaconは使えないためGAS呼び出しを試行)
+    window.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden' && !experienceEnded && layerIndex > 0) {
+            ExperimentLog.add('session_abandoned', { atLayer: layerIndex });
+        }
+    });
+    </script>
+</body>
+</html>
