@@ -12,6 +12,11 @@
             background-color: #000;
             font-family: 'Hiragino Mincho ProN', serif;
             color: #faf8f5;
+            /* iOSの長押しによる選択・拡大鏡・コールアウトを抑止 */
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-touch-callout: none;
+            touch-action: manipulation;
         }
         #video-background {
             position: absolute;
@@ -475,24 +480,30 @@
         continueBoot();
     }
 
-    async function setupOrientation() {
+    // iOS 13+のセンサー許可は「タップ直後のジェスチャ内」でしか要求できない。
+    // カメラ許可ダイアログを待った後に呼ぶと必ず失敗するため、
+    // スタートボタンの1タップ目で単独で要求する。
+    let orientationPermissionState = null;
+    async function requestOrientationPermission() {
         if (typeof DeviceOrientationEvent === 'undefined') {
-            ExperimentLog.add('orientation_unsupported');
-            return false;
-        }
-        // iOS 13+: ユーザージェスチャ内での明示的許可が必須
-        if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+            orientationPermissionState = 'unsupported';
+        } else if (typeof DeviceOrientationEvent.requestPermission === 'function') {
             try {
-                const state = await DeviceOrientationEvent.requestPermission();
-                if (state !== 'granted') {
-                    ExperimentLog.add('orientation_denied', { state: state });
-                    return false;
-                }
+                orientationPermissionState = await DeviceOrientationEvent.requestPermission();
             } catch (err) {
-                // ジェスチャ外で呼ばれた等
+                orientationPermissionState = 'error';
                 ExperimentLog.add('orientation_request_error', { message: String(err) });
-                return false;
             }
+        } else {
+            orientationPermissionState = 'granted'; // Android等は許可不要
+        }
+        ExperimentLog.add('orientation_permission', { state: orientationPermissionState });
+    }
+
+    async function setupOrientation() {
+        if (orientationPermissionState !== 'granted') {
+            ExperimentLog.add('orientation_unavailable', { state: orientationPermissionState });
+            return false;
         }
         window.addEventListener('deviceorientation', handleOrientation);
 
@@ -519,11 +530,16 @@
         hudTop.style.opacity = '1';
         let holdTimer = null;
         const start = () => {
-            holdTimer = setTimeout(() => setStaticState(true), 600);
+            holdTimer = setTimeout(() => {
+                setStaticState(true);
+                // 長押し成立を明確にフィードバックし、次の操作(タップ)へ誘導する
+                hudTop.innerText = '静まりました ── タップして、一枚剥がす';
+            }, 600);
         };
         const cancel = () => { clearTimeout(holdTimer); };
         window.addEventListener('touchstart', start, { passive: true });
         window.addEventListener('touchend', cancel, { passive: true });
+        window.addEventListener('touchcancel', cancel, { passive: true });
         window.addEventListener('mousedown', start);
         window.addEventListener('mouseup', cancel);
         // フォールバックでは一度静止に入ったら維持する(操作の複雑化を防ぐ)
@@ -959,7 +975,16 @@
         ExperimentLog.add('experience_start', { gyro: gyroOk, camera: cameraActive });
     }
 
+    // iOSではセンサー許可とカメラ許可がそれぞれ独立したタップ(ジェスチャ)を
+    // 必要とするため、起動を2タップに分ける。
+    let bootPhase = 0;
     document.getElementById('start-button').addEventListener('click', async function() {
+        if (bootPhase === 0) {
+            bootPhase = 1;
+            await requestOrientationPermission();
+            this.innerText = 'つづける ── カメラをひらく';
+            return;
+        }
         this.style.display = 'none';
         await startExperience();
     });
