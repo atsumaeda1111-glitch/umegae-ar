@@ -36,7 +36,9 @@
         #overlay-ui {
             position: absolute;
             top: 0; left: 0;
-            width: 100vw; height: 100vh;
+            width: 100vw;
+            height: 100vh;
+            height: 100dvh; /* iOS Safariのツールバーに隠れないよう実表示領域を使う */
             z-index: 10;
             display: flex;
             flex-direction: column;
@@ -44,7 +46,7 @@
             align-items: center;
             pointer-events: none;
             box-sizing: border-box;
-            padding: 40px 20px;
+            padding: 60px 20px 30px;
         }
         .hud-text {
             font-size: 14px;
@@ -200,6 +202,7 @@
     let scene, camera, renderer;
     let shadowMesh, mistParticles, komorebiGroup;
     let isStatic = false;
+    let lastStaticAt = -Infinity;   // 静止が解除された時刻(タップ時の揺れ救済用)
     let staticTimer = 0;
     let layerIndex = 0;                    // 0=未開始, 1..4=剥がした枚数
     let experienceStarted = false;
@@ -860,6 +863,7 @@
 
     function setStaticState(state) {
         if (isStatic === state) return;
+        if (!state) lastStaticAt = performance.now();
         isStatic = state;
         ExperimentLog.markStatic(state);
         if (experienceEnded) return;
@@ -923,7 +927,10 @@
 
     function onPeel() {
         if (!experienceStarted || experienceEnded) return;
-        if (!isStatic) {
+        // タップの衝撃で静止判定が一瞬解除されるため、直近1秒以内に
+        // 静止していたなら「静止中のタップ」とみなす
+        const recentlyStatic = isStatic || (performance.now() - lastStaticAt < 1000);
+        if (!recentlyStatic) {
             ExperimentLog.add('peel_rejected_not_static');
             return;
         }
@@ -943,6 +950,11 @@
 
     window.addEventListener('click', (e) => {
         if (e.target.closest('#start-button, #error-panel, #log-panel')) return;
+        // iOSはジェスチャ外で作られたAudioContextをsuspendedのままにするため、
+        // タップ(ジェスチャ)のたびに再開を試みて音を確実に有効化する
+        if (audioCtx && audioCtx.state === 'suspended' && !experienceEnded) {
+            audioCtx.resume().catch(() => {});
+        }
         onPeel();
     });
 
