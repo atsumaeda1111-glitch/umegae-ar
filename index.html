@@ -179,7 +179,7 @@
         <div id="log-status"></div>
     </div>
 
-    <div id="version-tag" style="position:absolute;right:8px;top:4px;z-index:20;font-size:10px;opacity:0.5;pointer-events:none;">v1.3</div>
+    <div id="version-tag" style="position:absolute;right:8px;top:4px;z-index:20;font-size:10px;opacity:0.5;pointer-events:none;">v1.4</div>
     <div id="debug-panel" style="display:none;position:absolute;left:0;bottom:0;width:100vw;z-index:300;background:rgba(0,0,0,0.75);color:#8f8;font-family:monospace;font-size:10px;line-height:1.5;padding:6px 8px;box-sizing:border-box;pointer-events:none;white-space:pre-wrap;"></div>
 
     <script>
@@ -595,13 +595,54 @@
         ambienceGain = audioCtx.createGain();
         ambienceGain.gain.value = 1.0;
 
-        ambienceGain.connect(highpass);
+        // 屋外の「空気感」: 生成インパルス応答によるコンボリューション残響
+        const reverb = audioCtx.createConvolver();
+        reverb.buffer = makeImpulseResponse(2.8, 2.4);
+        const reverbGain = audioCtx.createGain();
+        reverbGain.gain.value = 0.4;
+
+        ambienceGain.connect(highpass);                    // ドライ
+        ambienceGain.connect(reverb);                      // ウェット
+        reverb.connect(reverbGain);
+        reverbGain.connect(highpass);
         highpass.connect(presence);
         presence.connect(compressor);
         compressor.connect(masterGain);
         masterGain.connect(audioCtx.destination);
 
         ExperimentLog.add('audio_init', { sampleRate: audioCtx.sampleRate });
+    }
+
+    // 残響用インパルス応答(左右非相関の減衰ノイズ = 屋外の淡い響き)
+    function makeImpulseResponse(seconds, decayPow) {
+        const len = Math.floor(audioCtx.sampleRate * seconds);
+        const buffer = audioCtx.createBuffer(2, len, audioCtx.sampleRate);
+        for (let ch = 0; ch < 2; ch++) {
+            const data = buffer.getChannelData(ch);
+            for (let i = 0; i < len; i++) {
+                data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decayPow);
+            }
+        }
+        return buffer;
+    }
+
+    // 微細な破裂音の連なり(実際に餅の層を剥がすときのパチパチという質感)
+    // 前半はまばらに、後半に向かって密になる = 「ペリ……ペリペリッ」
+    function makeCrackleBuffer(durationSec, pops) {
+        const len = Math.floor(audioCtx.sampleRate * durationSec);
+        const buffer = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let k = 0; k < pops; k++) {
+            const pos = Math.floor(Math.pow(Math.random(), 0.6) * (len - 600));
+            const amp = 0.35 + Math.random() * 0.65;
+            const popLen = Math.floor(audioCtx.sampleRate * (0.003 + Math.random() * 0.009));
+            for (let i = 0; i < popLen && pos + i < len; i++) {
+                data[pos + i] += amp * (Math.random() * 2 - 1) * Math.pow(1 - i / popLen, 2);
+            }
+        }
+        // クリップ防止
+        for (let i = 0; i < len; i++) data[i] = Math.max(-1, Math.min(1, data[i]));
+        return buffer;
     }
 
     // 減衰エンベロープ付きノイズバッファ(剥離音・摩擦音の素体)
@@ -615,114 +656,175 @@
         return buffer;
     }
 
-    // 「ペリッ」剥離音: 高周波帯のバンドパスノイズ + 立ち上がり強調
+    // 剥離音: 微細クラックルの連なり「ペリ……ペリペリッ」(層が進むほど乾いて高く)
     function playPeelSound(layer) {
         const source = audioCtx.createBufferSource();
-        source.buffer = makeNoiseBuffer(0.25, 5);
-        source.playbackRate.value = 0.9 + layer * 0.12; // 層が進むほど乾いた高い音に
+        source.buffer = makeCrackleBuffer(0.32, 55 + layer * 12);
+        source.playbackRate.value = 0.95 + layer * 0.06;
 
         const bp = audioCtx.createBiquadFilter();
         bp.type = 'bandpass';
-        bp.frequency.value = 2500 + layer * 700;  // 2.5k → 4.6kHz
-        bp.Q.value = 2.5;
+        bp.frequency.value = 2300 + layer * 450;  // 2.75k → 4.1kHz
+        bp.Q.value = 1.1;                          // 広めの帯域で自然な質感を残す
 
         const g = audioCtx.createGain();
-        g.gain.setValueAtTime(1.4, audioCtx.currentTime);
+        g.gain.setValueAtTime(1.2, audioCtx.currentTime);
 
         source.connect(bp); bp.connect(g); g.connect(ambienceGain);
         source.start();
     }
 
-    // 1枚目: 衣擦れ(サーッという柔らかい高域ノイズを2回)
+    // 1枚目: 衣擦れ(布が擦れる不規則な「シュッ…サッ」を2往復)
     function playClothRustle() {
         for (let k = 0; k < 2; k++) {
-            const t = audioCtx.currentTime + k * 0.35;
+            const t = audioCtx.currentTime + k * 0.45;
             const src = audioCtx.createBufferSource();
-            src.buffer = makeNoiseBuffer(0.4, 2);
+            src.buffer = makeNoiseBuffer(0.5, 1.2);
+            src.playbackRate.value = 0.9 + Math.random() * 0.2; // 毎回わずかに違う音に
             const bp = audioCtx.createBiquadFilter();
             bp.type = 'bandpass';
-            bp.frequency.value = 4000;
-            bp.Q.value = 1.2;
+            bp.frequency.value = 3400 + Math.random() * 800;
+            bp.Q.value = 0.7;
             const g = audioCtx.createGain();
+            // 擦り始め→抜き→擦り戻しの不均一な振幅(機械的な一定音を避ける)
             g.gain.setValueAtTime(0, t);
-            g.gain.linearRampToValueAtTime(0.5, t + 0.1);
-            g.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
+            g.gain.linearRampToValueAtTime(0.32, t + 0.08);
+            g.gain.linearRampToValueAtTime(0.1, t + 0.2);
+            g.gain.linearRampToValueAtTime(0.26, t + 0.3);
+            g.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
             src.connect(bp); bp.connect(g); g.connect(ambienceGain);
             src.start(t);
         }
     }
 
-    // 2枚目: 足音「サクッ」×3歩 + 左右に流れる風
+    // 2枚目: 土の道を歩く足音3歩 + うねりのある風
     function playFootstepsAndWind() {
-        // 足音: 短いバースト、歩行リズム(約600ms間隔)
         for (let k = 0; k < 3; k++) {
-            const t = audioCtx.currentTime + 0.2 + k * 0.6;
-            const src = audioCtx.createBufferSource();
-            src.buffer = makeNoiseBuffer(0.09, 6);
-            const bp = audioCtx.createBiquadFilter();
-            bp.type = 'bandpass';
-            bp.frequency.value = 3200;
-            bp.Q.value = 1.8;
+            // 歩行リズムは機械的な等間隔を避けてわずかに揺らす
+            const t = audioCtx.currentTime + 0.2 + k * 0.62 + (Math.random() - 0.5) * 0.06;
             const pan = audioCtx.createStereoPanner ? audioCtx.createStereoPanner() : null;
-            const g = audioCtx.createGain();
-            g.gain.value = 1.1;
-            src.connect(bp);
-            if (pan) { pan.pan.value = (k % 2 === 0) ? -0.3 : 0.3; bp.connect(pan); pan.connect(g); }
-            else { bp.connect(g); }
-            g.connect(ambienceGain);
-            src.start(t);
+            const stepOut = audioCtx.createGain();
+            stepOut.gain.value = 1.0;
+            if (pan) { pan.pan.value = (k % 2 === 0) ? -0.25 : 0.25; stepOut.connect(pan); pan.connect(ambienceGain); }
+            else { stepOut.connect(ambienceGain); }
+
+            // (a) 接地の「トッ」: 低めの短いノイズ(踏みしめる重さ)
+            const thump = audioCtx.createBufferSource();
+            thump.buffer = makeNoiseBuffer(0.07, 5);
+            const thumpBp = audioCtx.createBiquadFilter();
+            thumpBp.type = 'bandpass';
+            thumpBp.frequency.value = 480;
+            thumpBp.Q.value = 1.0;
+            const thumpG = audioCtx.createGain();
+            thumpG.gain.value = 1.5;
+            thump.connect(thumpBp); thumpBp.connect(thumpG); thumpG.connect(stepOut);
+            thump.start(t);
+
+            // (b) 土と小石の「サクッ」: 微細クラックル(接地の直後にわずかに遅れて)
+            const grit = audioCtx.createBufferSource();
+            grit.buffer = makeCrackleBuffer(0.11, 14);
+            grit.playbackRate.value = 0.9 + Math.random() * 0.25;
+            const gritBp = audioCtx.createBiquadFilter();
+            gritBp.type = 'bandpass';
+            gritBp.frequency.value = 3000;
+            gritBp.Q.value = 1.0;
+            const gritG = audioCtx.createGain();
+            gritG.gain.value = 0.8;
+            grit.connect(gritBp); gritBp.connect(gritG); gritG.connect(stepOut);
+            grit.start(t + 0.02);
         }
-        // 風: ループするノイズをLFOで左右に定位移動(4枚目で停止するため登録)
+
+        // 風: 周波数・音量・定位がそれぞれ別周期でゆっくり揺らぐ(本物の風のうねり)
         const wind = audioCtx.createBufferSource();
-        wind.buffer = makeNoiseBuffer(2.0, 0.5);
+        wind.buffer = makeNoiseBuffer(4.0, 0.15);
         wind.loop = true;
         const windBp = audioCtx.createBiquadFilter();
         windBp.type = 'bandpass';
-        windBp.frequency.value = 1800;
-        windBp.Q.value = 0.6;
+        windBp.frequency.value = 1300;
+        windBp.Q.value = 0.5;
+
+        // 風色のゆらぎ(フィルタ中心周波数を大小2つのLFOで変調)
+        const lfoSlow = audioCtx.createOscillator();
+        const lfoSlowG = audioCtx.createGain();
+        lfoSlow.frequency.value = 0.06;
+        lfoSlowG.gain.value = 450;
+        lfoSlow.connect(lfoSlowG); lfoSlowG.connect(windBp.frequency);
+        lfoSlow.start();
+        const lfoFast = audioCtx.createOscillator();
+        const lfoFastG = audioCtx.createGain();
+        lfoFast.frequency.value = 0.4;
+        lfoFastG.gain.value = 120;
+        lfoFast.connect(lfoFastG); lfoFastG.connect(windBp.frequency);
+        lfoFast.start();
+
         const windGain = audioCtx.createGain();
         windGain.gain.setValueAtTime(0, audioCtx.currentTime);
-        windGain.gain.linearRampToValueAtTime(0.18, audioCtx.currentTime + 2);
+        windGain.gain.linearRampToValueAtTime(0.15, audioCtx.currentTime + 2.5);
+        // 息づかいのような強弱
+        const lfoAmp = audioCtx.createOscillator();
+        const lfoAmpG = audioCtx.createGain();
+        lfoAmp.frequency.value = 0.09;
+        lfoAmpG.gain.value = 0.05;
+        lfoAmp.connect(lfoAmpG); lfoAmpG.connect(windGain.gain);
+        lfoAmp.start();
+
         wind.connect(windBp);
         if (audioCtx.createStereoPanner) {
             const windPan = audioCtx.createStereoPanner();
-            const lfo = audioCtx.createOscillator();
-            const lfoGain = audioCtx.createGain();
-            lfo.frequency.value = 0.08;
-            lfoGain.gain.value = 0.7;
-            lfo.connect(lfoGain); lfoGain.connect(windPan.pan);
-            lfo.start();
+            const lfoPan = audioCtx.createOscillator();
+            const lfoPanG = audioCtx.createGain();
+            lfoPan.frequency.value = 0.07;
+            lfoPanG.gain.value = 0.6;
+            lfoPan.connect(lfoPanG); lfoPanG.connect(windPan.pan);
+            lfoPan.start();
             windBp.connect(windPan); windPan.connect(windGain);
-            sustainedNodes.push(lfo);
+            sustainedNodes.push(lfoPan);
         } else {
             windBp.connect(windGain);
         }
         windGain.connect(ambienceGain);
         wind.start();
-        sustainedNodes.push(wind);
+        sustainedNodes.push(wind, lfoSlow, lfoFast, lfoAmp);
     }
 
-    // 3枚目: 金刀比羅宮の鐘(高次倍音の重ね合わせ、長い減衰)
+    // 3枚目: 遠くの梵鐘(実物の鐘の非整数倍音比 + わずかな「うなり」 + 長い余韻)
     function playBell() {
         const t = audioCtx.currentTime + 0.1;
+        const base = 523; // 遠鳴りの芯(200Hzハイパスの上に置く)
         const partials = [
-            { f: 1760, gain: 0.5, decay: 3.5 },
-            { f: 2640, gain: 0.3, decay: 2.8 },
-            { f: 4180, gain: 0.18, decay: 2.0 },
-            { f: 5290, gain: 0.1, decay: 1.4 }
+            { r: 1.0,  gain: 0.34, decay: 6.0 },
+            { r: 1.19, gain: 0.22, decay: 4.5 },
+            { r: 1.56, gain: 0.15, decay: 3.4 },
+            { r: 2.0,  gain: 0.10, decay: 2.6 },
+            { r: 2.66, gain: 0.07, decay: 1.8 },
+            { r: 4.07, gain: 0.04, decay: 1.1 }
         ];
         partials.forEach(p => {
-            const osc = audioCtx.createOscillator();
-            osc.type = 'sine';
-            osc.frequency.value = p.f;
-            const g = audioCtx.createGain();
-            g.gain.setValueAtTime(0, t);
-            g.gain.linearRampToValueAtTime(p.gain, t + 0.02);
-            g.gain.exponentialRampToValueAtTime(0.0005, t + p.decay);
-            osc.connect(g); g.connect(ambienceGain);
-            osc.start(t);
-            osc.stop(t + p.decay + 0.1);
+            // 2本をわずかにずらして重ね、実鐘特有のゆっくりした「うなり」を作る
+            [0, 1.7].forEach(detune => {
+                const osc = audioCtx.createOscillator();
+                osc.type = 'sine';
+                osc.frequency.value = base * p.r + detune;
+                const g = audioCtx.createGain();
+                g.gain.setValueAtTime(0, t);
+                g.gain.linearRampToValueAtTime(p.gain / 2, t + 0.015);
+                g.gain.exponentialRampToValueAtTime(0.0004, t + p.decay);
+                osc.connect(g); g.connect(ambienceGain);
+                osc.start(t);
+                osc.stop(t + p.decay + 0.1);
+            });
         });
+        // 撞木が当たる瞬間の硬いアタック(ごく短い金属質ノイズ)
+        const strike = audioCtx.createBufferSource();
+        strike.buffer = makeNoiseBuffer(0.04, 6);
+        const strikeBp = audioCtx.createBiquadFilter();
+        strikeBp.type = 'bandpass';
+        strikeBp.frequency.value = 2600;
+        strikeBp.Q.value = 1.5;
+        const strikeG = audioCtx.createGain();
+        strikeG.gain.value = 0.35;
+        strike.connect(strikeBp); strikeBp.connect(strikeG); strikeG.connect(ambienceGain);
+        strike.start(t);
     }
 
     // 4枚目: 全音響を「フッ」とシャットアウト
