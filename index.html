@@ -179,7 +179,7 @@
         <div id="log-status"></div>
     </div>
 
-    <div id="version-tag" style="position:absolute;right:8px;top:4px;z-index:20;font-size:10px;opacity:0.5;pointer-events:none;">v1.4</div>
+    <div id="version-tag" style="position:absolute;right:8px;top:4px;z-index:20;font-size:10px;opacity:0.5;pointer-events:none;">v1.5</div>
     <div id="debug-panel" style="display:none;position:absolute;left:0;bottom:0;width:100vw;z-index:300;background:rgba(0,0,0,0.75);color:#8f8;font-family:monospace;font-size:10px;line-height:1.5;padding:6px 8px;box-sizing:border-box;pointer-events:none;white-space:pre-wrap;"></div>
 
     <script>
@@ -862,21 +862,42 @@
         shadowMesh = new THREE.Mesh(geometry, material);
         scene.add(shadowMesh);
 
-        // 1枚目: 朝霧パーティクル(最初は不可視)
-        const mistGeo = new THREE.BufferGeometry();
-        const mistCount = 120;
-        const positions = new Float32Array(mistCount * 3);
-        for (let i = 0; i < mistCount; i++) {
-            positions[i * 3] = (Math.random() - 0.5) * 12;
-            positions[i * 3 + 1] = (Math.random() - 0.5) * 8;
-            positions[i * 3 + 2] = (Math.random() - 0.5) * 4;
-        }
-        mistGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-        const mistMat = new THREE.PointsMaterial({
-            color: 0xf0f2f5, size: 0.25, transparent: true, opacity: 0.0,
-            depthWrite: false, blending: THREE.AdditiveBlending
+        // 1枚目: 朝霧(最初は不可視)
+        // 四角い点ではなく、放射状にぼかした円形スプライトを大小2層重ねて
+        // 逆方向に漂わせることで、面としての「霧」に見せる
+        const mistTexture = (() => {
+            const c = document.createElement('canvas');
+            c.width = c.height = 128;
+            const ctx = c.getContext('2d');
+            const grad = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+            grad.addColorStop(0, 'rgba(255,255,255,0.7)');
+            grad.addColorStop(0.4, 'rgba(255,255,255,0.3)');
+            grad.addColorStop(1, 'rgba(255,255,255,0)');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, 128, 128);
+            return new THREE.CanvasTexture(c);
+        })();
+        mistParticles = new THREE.Group();
+        [
+            { count: 35, size: 4.5, speed: 0.00022 },   // 奥の大きな霧塊
+            { count: 60, size: 2.2, speed: -0.00038 }   // 手前の細かい霧
+        ].forEach(cfg => {
+            const geo = new THREE.BufferGeometry();
+            const pos = new Float32Array(cfg.count * 3);
+            for (let i = 0; i < cfg.count; i++) {
+                pos[i * 3] = (Math.random() - 0.5) * 14;
+                pos[i * 3 + 1] = (Math.random() - 0.5) * 9;
+                pos[i * 3 + 2] = (Math.random() - 0.5) * 5;
+            }
+            geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+            const mat = new THREE.PointsMaterial({
+                color: 0xf2f4f6, size: cfg.size, map: mistTexture,
+                transparent: true, opacity: 0.0, depthWrite: false
+            });
+            const pts = new THREE.Points(geo, mat);
+            pts.userData.speed = cfg.speed;
+            mistParticles.add(pts);
         });
-        mistParticles = new THREE.Points(mistGeo, mistMat);
         scene.add(mistParticles);
 
         // 3枚目: 木漏れ日(加算合成の光点群、最初は不可視)
@@ -906,7 +927,9 @@
         if (experienceEnded) {
             // 4枚目以降: すべてを消灯したまま描画のみ継続
             shadowMesh.material.opacity = THREE.MathUtils.lerp(shadowMesh.material.opacity, 0, 0.15);
-            mistParticles.material.opacity = THREE.MathUtils.lerp(mistParticles.material.opacity, 0, 0.15);
+            mistParticles.children.forEach(p => {
+                p.material.opacity = THREE.MathUtils.lerp(p.material.opacity, 0, 0.15);
+            });
             komorebiGroup.children.forEach(c => {
                 c.material.opacity = THREE.MathUtils.lerp(c.material.opacity, 0, 0.15);
             });
@@ -918,11 +941,15 @@
             } else if (!isStatic) {
                 shadowMesh.material.opacity = THREE.MathUtils.lerp(shadowMesh.material.opacity, 0.0, 0.1);
             }
-            // 朝霧: 1枚目以降ゆっくり漂う
+            // 朝霧: 1枚目以降、2層が逆方向にゆっくり漂う
             if (layerIndex >= 1 && layerIndex < 4) {
-                mistParticles.material.opacity = THREE.MathUtils.lerp(mistParticles.material.opacity, 0.35, 0.01);
-                mistParticles.rotation.y += 0.0004;
-                mistParticles.position.y = Math.sin(now * 0.0005) * 0.2;
+                // 2枚目以降は霧が薄れていく(街道を進み、霧が晴れる)
+                const mistTarget = layerIndex === 1 ? 0.32 : 0.16;
+                mistParticles.children.forEach(p => {
+                    p.material.opacity = THREE.MathUtils.lerp(p.material.opacity, mistTarget, 0.008);
+                    p.rotation.y += p.userData.speed;
+                });
+                mistParticles.position.y = Math.sin(now * 0.0003) * 0.25;
             }
             // 木漏れ日: 3枚目でゆらめきながら点灯
             if (layerIndex >= 3 && layerIndex < 4) {
